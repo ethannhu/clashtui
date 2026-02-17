@@ -1,4 +1,5 @@
-clashtui/target
-/test
-/vendor
-/.vscode
+target/
+clashtui/
+InstallRes/
+PkgManagers/
+install
