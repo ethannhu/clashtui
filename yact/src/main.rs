@@ -1,67 +1,130 @@
-// clashtui/yact/src/main.rs
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 mod api;
-mod ui;
 
-use ui::*;
+use crate::api::MihomoClient;
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
-    execute,
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
-};
+/// A CLI tool for interacting with Mihomo API
+#[derive(Parser, Debug)]
+#[command(name = "yact")]
+#[command(author = "yact Developer")]
+#[command(version = "0.1.0")]
+#[command(about = "CLI tool for Mihomo API", long_about = None)]
+struct Args {
+    /// Mihomo API URL
+    #[arg(short, long, default_value = "http://127.0.0.1:9097")]
+    url: String,
 
-fn main() -> std::io::Result<()> {
-    let mut stdout = std::io::stdout();
-    enable_raw_mode()?;
+    /// API Secret key
+    #[arg(short, long, default_value = "123456")]
+    secret: Option<String>,
 
-    execute!(stdout, Clear(ClearType::All))?;
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    let mut terminal = ratatui::Terminal::new(backend)?;
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Get current configuration
+    #[command(name = "configs")]
+    Configs,
 
-    let mut app = AppState::new();
-    let mut running = true;
+    /// Get all proxies and groups
+    #[command(name = "proxies")]
+    Proxies,
 
-    while running {
-        terminal.draw(|frame| {
-            render_ui(frame, &mut app);
-        })?;
+    /// Get logs (supports SSE streaming)
+    #[command(name = "logs")]
+    Logs {
+        /// Filter by log level (info, warning, error, debug)
+        #[arg(short, long)]
+        level: Option<String>,
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Left => app.previous_page(),
-                    KeyCode::Right => app.next_page(),
-                    KeyCode::Up => app.scroll_up(),
-                    KeyCode::Down => app.scroll_down(),
-                    KeyCode::Char('r') | KeyCode::Char('R') => {
-                        if app.current_page == ui::AppPage::Config {
-                            app.configs = None;
-                            app.load_configs();
+        /// Follow logs continuously
+        #[arg(short, long)]
+        follow: bool,
+    },
+
+    /// Get version information
+    #[command(name = "version")]
+    Version,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let client = MihomoClient::new(&args.url, args.secret.as_deref().unwrap_or(""));
+
+    match &args.command {
+        Commands::Configs => match client.get_configs().await {
+            Ok(configs) => {
+                println!("{}", serde_json::to_string_pretty(&configs)?);
+            }
+            Err(e) => {
+                eprintln!("Failed to get configs: {}", e);
+                std::process::exit(1);
+            }
+        },
+
+        Commands::Proxies => match client.get_proxies().await {
+            Ok(proxies) => {
+                println!("{}", serde_json::to_string_pretty(&proxies)?);
+            }
+            Err(e) => {
+                eprintln!("Failed to get proxies: {}", e);
+                std::process::exit(1);
+            }
+        },
+
+        Commands::Logs { level, follow } => {
+            let level_str = level.as_deref();
+            match client.get_logs(level_str).await {
+                Ok(mut response) => {
+                    if *follow {
+                        println!("=== Following logs (Ctrl+C to stop) ===");
+                    }
+
+                    // For SSE streaming logs in reqwest 0.13.x, read chunks until stream ends
+                    let mut buffer = Vec::new();
+                    while let Ok(chunk) = response.chunk().await {
+                        match chunk {
+                            Some(data) => {
+                                buffer.clear();
+                                buffer.extend_from_slice(&data);
+                                let text = String::from_utf8_lossy(&buffer);
+                                print!("{}", text);
+                                std::io::Write::flush(&mut std::io::stdout())?;
+                            }
+                            None => {
+                                // Stream has ended
+                                break;
+                            }
+                        }
+
+                        if !*follow {
+                            break;
                         }
                     }
-                    KeyCode::Enter => {
-                        if app.current_page == ui::AppPage::Config && app.configs.is_none() {
-                            app.load_configs();
-                        }
-                    }
-                    KeyCode::Char('q') | KeyCode::Char('Q') => running = false,
-                    KeyCode::Esc => running = false,
-                    KeyCode::Char('l') | KeyCode::Char('L') => {
-                        if app.current_page == ui::AppPage::Log {
-                            app.load_logs();
-                        }
-                    }
-                    _ => {}
+                }
+                Err(e) => {
+                    eprintln!("Failed to get logs: {}", e);
+                    std::process::exit(1);
                 }
             }
         }
-    }
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), Clear(ClearType::All))?;
-    terminal.show_cursor()?;
+        Commands::Version => match client.get_version().await {
+            Ok(version) => {
+                println!("Mihomo version: {}", version);
+            }
+            Err(e) => {
+                eprintln!("Failed to get version: {}", e);
+                std::process::exit(1);
+            }
+        },
+    }
 
     Ok(())
 }
