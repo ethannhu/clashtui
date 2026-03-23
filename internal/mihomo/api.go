@@ -1,4 +1,4 @@
-package cmd
+package mihomo
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ type Core struct {
 	secret  string
 }
 
-func get(path string) []byte {
+func Get(path string) []byte {
 
 	c := Core{
 		address: "http://localhost:9097/",
@@ -34,7 +34,7 @@ func get(path string) []byte {
 	return body
 }
 
-func put(path string, data []byte) string {
+func Put(path string, data []byte) string {
 
 	c := Core{
 		address: "http://localhost:9097/",
